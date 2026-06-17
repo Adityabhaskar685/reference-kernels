@@ -28,26 +28,22 @@ def _batched_householder(data: input_t) -> output_t:
         x = A[:, j:, j]                                  # (B, m), m = n-j
         alpha = x[:, 0]                                  # (B,)
         xnorm_sq = (x * x).sum(dim=1)                    # ||x||^2
-        sigma = (xnorm_sq - alpha * alpha).clamp_min(0.0)  # ||x[1:]||^2
-        reflect = sigma > 0.0                            # (B,) genuine reflector?
-
         normx = torch.sqrt(xnorm_sq)
-        s = torch.where(alpha >= 0, one, -one)           # sign, sign(0):=+1
-        beta = -s * normx                                # R diagonal (no cancellation)
+        beta = torch.copysign(normx, -alpha)             # R diagonal (no cancellation)
 
-        denom = torch.where(reflect, alpha - beta, one)  # safe divisor
-        tau_j = torch.where(reflect, (beta - alpha) / beta, torch.zeros_like(alpha))
+        active = normx > 0.0                             # zero column => identity reflector
+        denom = torch.where(active, alpha - beta, one)   # safe divisor
+        tau_j = torch.where(active, -denom / beta, alpha)
 
         v = x / denom.unsqueeze(1)
-        v = torch.where(reflect.unsqueeze(1), v, torch.zeros_like(v))
         v[:, 0] = 1.0                                     # unit Householder head
 
-        A[:, j, j] = torch.where(reflect, beta, alpha)   # R[j,j]
+        A[:, j, j] = beta                                # R[j,j]
         tau[:, j] = tau_j
         if j + 1 < n:
             A[:, j + 1:, j] = v[:, 1:]                    # store v below diagonal
             sub = A[:, j:, j + 1:]                        # (B, m, n-j-1) trailing block
             w = (v.unsqueeze(1) @ sub) * tau_j.view(Bsz, 1, 1)   # (B, 1, n-j-1)
-            sub -= v.unsqueeze(2) @ w                     # rank-1 update, in place
+            sub.baddbmm_(v.unsqueeze(2), w, beta=1.0, alpha=-1.0)
 
     return A, tau
