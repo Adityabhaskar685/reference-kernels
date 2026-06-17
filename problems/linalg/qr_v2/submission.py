@@ -21,7 +21,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 _PANEL_NB = 16          # panel width (must be a power of 2 for the Triton tile)
 _PANEL_WARPS = 8        # num_warps for the panel kernel
-_BLOCKED_MIN_N = 256    # only route n >= this to the blocked Triton path
+_BLOCKED_MIN_N = 176    # only route n >= this to the blocked Triton path
 _TRAIL_FP64 = False     # True => do the trailing WY GEMMs in FP64 (safest,
                         # slower); False => FP32 trailing with an FP64-formed T
                         # (recommended: fast + accurate). Flip to True if the
