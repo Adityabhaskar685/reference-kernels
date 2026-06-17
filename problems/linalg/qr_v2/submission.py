@@ -43,8 +43,7 @@ def custom_kernel(data: input_t) -> output_t:
     # ~8*(n/nb) launches (one fused Triton panel kernel + a handful of batched
     # GEMMs per panel), which is the whole point of this submission.
     Bsz, n, _ = data.shape
-    try_blocked_few_large = n == 2048 and Bsz >= 8
-    if n <= 64 or (Bsz <= 16 and not try_blocked_few_large):
+    if n <= 64 or Bsz <= 16:
         return torch.geqrf(data)
     if _HAVE_TRITON and n >= _BLOCKED_MIN_N:
         try:
@@ -55,8 +54,6 @@ def custom_kernel(data: input_t) -> output_t:
             # proven unblocked path. Numerical errors do NOT raise -- they show
             # up as residual failures in the checker -- so this only catches
             # genuine launch/compile faults, not silent wrong answers.
-            if try_blocked_few_large:
-                return torch.geqrf(data)
             pass
     return _batched_householder(data)
 
