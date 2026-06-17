@@ -20,7 +20,7 @@ except Exception:
 # Tunables (iterate on these via Modal, NOT via leaderboard submissions).
 # ---------------------------------------------------------------------------
 _PANEL_NB = 16          # panel width (must be a power of 2 for the Triton tile)
-_PANEL_WARPS = 8        # num_warps for the panel kernel
+_PANEL_WARPS = 8        # default num_warps for the panel kernel
 _BLOCKED_MIN_N = 176    # only route n >= this to the blocked Triton path
 _TRAIL_FP64 = False     # True => do the trailing WY GEMMs in FP64 (safest,
                         # slower); False => FP32 trailing with an FP64-formed T
@@ -47,7 +47,8 @@ def custom_kernel(data: input_t) -> output_t:
         return torch.geqrf(data)
     if _HAVE_TRITON and n >= _BLOCKED_MIN_N:
         try:
-            return _blocked_householder(data, _PANEL_NB)
+            panel_nb = 64 if n <= 176 else (32 if n <= 512 else _PANEL_NB)
+            return _blocked_householder(data, panel_nb)
         except Exception:
             # Never let a kernel hiccup take down a submission: fall back to the
             # proven unblocked path. Numerical errors do NOT raise -- they show
@@ -141,6 +142,7 @@ def _blocked_householder(data: input_t, nb: int) -> output_t:
     BLOCK_M = triton.next_power_of_2(n)
     BLOCK_KB = nb
     eye = torch.eye(nb, device=dev, dtype=torch.float32)
+    panel_warps = 16 if n >= 1024 else _PANEL_WARPS
 
     for k in range(0, n, nb):
         kb = min(nb, n - k)
@@ -150,7 +152,7 @@ def _blocked_householder(data: input_t, nb: int) -> output_t:
             A.stride(0), A.stride(1), A.stride(2),
             tau.stride(0),
             BLOCK_M=BLOCK_M, BLOCK_KB=BLOCK_KB,
-            num_warps=_PANEL_WARPS,
+            num_warps=panel_warps,
         )
 
         if k + kb < n:
