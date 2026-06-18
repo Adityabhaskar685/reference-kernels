@@ -43,10 +43,13 @@ def custom_kernel(data: input_t) -> output_t:
     # ~8*(n/nb) launches (one fused Triton panel kernel + a handful of batched
     # GEMMs per panel), which is the whole point of this submission.
     Bsz, n, _ = data.shape
-    if n <= 64 or Bsz <= 16:
+    try_partial_2048 = _HAVE_TRITON and n == 2048 and Bsz >= 8
+    if n <= 64 or (Bsz <= 16 and not try_partial_2048):
         return torch.geqrf(data)
     if _HAVE_TRITON and n >= _BLOCKED_MIN_N:
         try:
+            if try_partial_2048:
+                return _blocked_householder(data, _PANEL_NB, stop_at=1024)
             panel_nb = 64 if n <= 176 else (32 if n <= 1024 else _PANEL_NB)
             return _blocked_householder(data, panel_nb)
         except Exception:
@@ -54,6 +57,8 @@ def custom_kernel(data: input_t) -> output_t:
             # proven unblocked path. Numerical errors do NOT raise -- they show
             # up as residual failures in the checker -- so this only catches
             # genuine launch/compile faults, not silent wrong answers.
+            if try_partial_2048:
+                return torch.geqrf(data)
             pass
     return _batched_householder(data)
 
@@ -133,7 +138,7 @@ if _HAVE_TRITON:
         tl.store(tau_ptr + pid * stride_tb + col_abs, tau_acc, mask=cmask)
 
 
-def _blocked_householder(data: input_t, nb: int) -> output_t:
+def _blocked_householder(data: input_t, nb: int, stop_at: int | None = None) -> output_t:
     A = data.clone()                                  # (B, n, n) FP32, in place
     Bsz, n, _ = A.shape
     dev = A.device
@@ -144,7 +149,9 @@ def _blocked_householder(data: input_t, nb: int) -> output_t:
     eye = torch.eye(nb, device=dev, dtype=torch.float32)
     panel_warps = 16 if n >= 1024 else _PANEL_WARPS
 
-    for k in range(0, n, nb):
+    stop = n if stop_at is None else min(stop_at, n)
+
+    for k in range(0, stop, nb):
         kb = min(nb, n - k)
         _panel_kernel[(Bsz,)](
             A, tau,
@@ -185,6 +192,11 @@ def _blocked_householder(data: input_t, nb: int) -> output_t:
                 C = A[:, k:, k + kb:]                   # FP32 view
                 W = Tf.transpose(1, 2) @ (Vf.transpose(1, 2) @ C)
                 A[:, k:, k + kb:] = C - Vf @ W
+
+    if stop < n:
+        sub_h, sub_tau = torch.geqrf(A[:, stop:, stop:].contiguous())
+        A[:, stop:, stop:] = sub_h
+        tau[:, stop:] = sub_tau
 
     return A, tau
 
